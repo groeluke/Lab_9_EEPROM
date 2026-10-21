@@ -91,7 +91,6 @@ ShowStored:
 Selecting:
     MOVF    Pending,W
     CALL    DisplayLetter ;show the letter we are picking
-
     BTFSS   PORTB,1       ;has the Write button been let go? (HIGH = released)
     GOTO    CheckSelect   ;if not still held then look at the Select button
     CALL    Wait10ms      ;if it looks released then wait 10 ms to make sure
