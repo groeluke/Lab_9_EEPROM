@@ -1,7 +1,7 @@
     ; Luke Groesbeck
     ; RCET3375
     ; EEPROM
-    ; https://github.com/groeluke/Lab_8_UART/tree/main/LAB_9_Part_1_EEPROM.X
+    ; https://github.com/groeluke/Lab_9_EEPROM/tree/main/LAB_9_Part_1_EEPROM.X
     ; Linker code = -Wl,-presetVect=0000h,-pisrVect=0004h,-pcode=0008h
 ; PIC16F883 Configuration Bit Settings
 ; Assembly source line config statements
