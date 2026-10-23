@@ -92,7 +92,7 @@ Setup:
 
     MOVLW   0x4C               ;'L'
     MOVWF   PORTC              ;show LOCKED
-
+;The EE Data Memory was set so that the pin was saved during the setup and program process!
 ; MAIN LOOP - runs once every 10 ms
 Main:
     BTFSS   PIR1,1             ;10 ms tick yet? (TMR2IF)
@@ -335,6 +335,5 @@ EEPROMRead:
     BANKSEL PORTA              ;back to bank 0
     MOVWF   ee_data
     RETURN
-
 
     End

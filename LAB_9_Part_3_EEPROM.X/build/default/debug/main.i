@@ -2405,14 +2405,10 @@ Setup:
     CLRF BuzzTimer
     CLRF LockTimer
 
-    CALL EEPROMWritePin ;TEMPORARY - saves PIN 1234 (delete this line later)
-
     MOVLW 0x4C ;'L'
     MOVWF PORTC ;show LOCKED
-
-;---------------------------------------------------------------------
+;The EE Data Memory was set so that the pin was saved during the setup and program process!
 ; MAIN LOOP - runs once every 10 ms
-;---------------------------------------------------------------------
 Main:
     BTFSS PIR1,1 ;10 ms tick yet? (((PIR1) and 07Fh), 1)
     GOTO Main
@@ -2423,9 +2419,7 @@ Main:
     CALL KeyEvent ;debounce - runs HandleKey once per real press
     GOTO Main
 
-;---------------------------------------------------------------------
 ; RunTimers - count down the buzzer and the solenoid output
-;---------------------------------------------------------------------
 RunTimers:
     MOVF BuzzTimer,F ;is the buzzer timer zero?
     BTFSC STATUS,2
@@ -2445,12 +2439,10 @@ CheckLock:
     MOVWF PORTC ;show LOCKED again
     RETURN
 
-;---------------------------------------------------------------------
 ; ScanKeypad - pull one row low at a time. If a column reads low,
 ; that key is down, so its ASCII code goes in KeyNow.
 ; (MOVWF only runs when the column is low, because BTFSS skips it
 ; when the column is high)
-;---------------------------------------------------------------------
 ScanKeypad:
     CLRF KeyNow ;assume no key is down
 
@@ -2523,11 +2515,9 @@ ScanKeypad:
     MOVWF KeyNow
     RETURN ;we are back in bank 0
 
-;---------------------------------------------------------------------
 ; KeyEvent - debounce. A key counts as ONE press only if:
-; 1) it is seen on two scans in a row (10 ms apart), and
-; 2) it is not the key we already counted (wait for release)
-;---------------------------------------------------------------------
+; it is seen on two scans in a row (10 ms apart), and
+; it is not the key we already counted (wait for release)
 KeyEvent:
     MOVF KeyNow,W
     BTFSC STATUS,2 ;no key down?
@@ -2553,9 +2543,7 @@ NoKey:
     CLRF KeyDone
     RETURN
 
-;---------------------------------------------------------------------
-; HandleKey - runs once per key press (the key is in KeyDone)
-;---------------------------------------------------------------------
+; HandleKey runs once per key press (the key is in KeyDone)
 HandleKey:
     BSF PORTA,0 ;buzzer ON for every key
     MOVLW BeepTicks
@@ -2578,7 +2566,7 @@ HandleKey:
     BTFSS KeyDone,4 ;digits (0x30-0x39) have bit 4 set, A-D do not
     RETURN ;A-D: beep only, nothing else
 
-    ;---- it is a digit ----
+    ;it is a digit
     BTFSC DigitCount,2 ;already 4 digits? (counts 0-3 have bit 2 clear)
     GOTO TooMany ;yes - this is a fifth digit
 
@@ -2632,7 +2620,7 @@ CompareLoop:
     DECFSZ Temp,F ;one digit done
     GOTO CompareLoop
 
-    ;---- all 4 digits matched ----
+    ;all 4 digits matched
     CLRF DigitCount ;clear the entry
     BSF PORTA,1 ;solenoid and LED ON
     MOVLW OpenTicks
@@ -2647,11 +2635,9 @@ Reject:
     MOVWF PORTC
     RETURN
 
-;---------------------------------------------------------------------
 ; EEPROMRead (Part 2 interface)
 ; in : ee_address
 ; out: ee_data
-;---------------------------------------------------------------------
 EEPROMRead:
     BANKSEL EEADR
     MOVF ee_address,W
@@ -2663,58 +2649,6 @@ EEPROMRead:
     MOVF EEDATA,W ;grab the byte
     BANKSEL PORTA ;back to bank 0
     MOVWF ee_data
-    RETURN
-
-;=====================================================================
-; TEMPORARY - saves PIN 1 2 3 4 at EEPROM 0x10-0x13.
-; Delete everything from here to End after the PIN is saved.
-;=====================================================================
-EEPROMWritePin:
-    MOVLW 0x10 ;digit 1
-    MOVWF ee_address
-    MOVLW 0x01
-    MOVWF ee_data
-    CALL EEPROMWrite
-
-    MOVLW 0x11 ;digit 2
-    MOVWF ee_address
-    MOVLW 0x02
-    MOVWF ee_data
-    CALL EEPROMWrite
-
-    MOVLW 0x12 ;digit 3
-    MOVWF ee_address
-    MOVLW 0x03
-    MOVWF ee_data
-    CALL EEPROMWrite
-
-    MOVLW 0x13 ;digit 4
-    MOVWF ee_address
-    MOVLW 0x04
-    MOVWF ee_data
-    CALL EEPROMWrite
-    RETURN
-
-EEPROMWrite:
-    BANKSEL EEADR
-    MOVF ee_address,W
-    MOVWF EEADR ;address to write
-    BANKSEL EEDATA
-    MOVF ee_data,W
-    MOVWF EEDATA ;value to write
-    BANKSEL EECON1
-    BCF EECON1,7 ;((EECON1) and 07Fh), 7 = 0 (data EEPROM)
-    BSF EECON1,2 ;((EECON1) and 07Fh), 2 = 1 (allow writing)
-    MOVLW 0x55 ;required unlock sequence
-    MOVWF EECON2
-    MOVLW 0xAA
-    MOVWF EECON2
-    BSF EECON1,1 ;((EECON1) and 07Fh), 1 = 1 (start the write)
-WaitWrite:
-    BTFSC EECON1,1 ;wait until ((EECON1) and 07Fh), 1 clears
-    GOTO WaitWrite
-    BCF EECON1,2 ;((EECON1) and 07Fh), 2 = 0 (writing off again)
-    BANKSEL PORTA ;back to bank 0
     RETURN
 
     End
