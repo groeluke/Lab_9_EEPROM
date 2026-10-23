@@ -2595,8 +2595,8 @@ EEPROMWrite:
     MOVWF EEDATA ;the byte to write
 
 
-    MOVLW 1 ;TEST ONLY: remove the ; on these two lines to write
-    ADDWF EEDATA,F ;the WRONG byte, so the check fails on purpose
+    ;MOVLW 1 ;TEST ONLY: remove the ; on these two lines to write
+    ;ADDWF EEDATA,F ;the WRONG byte, so the check fails on purpose
 
 
     BANKSEL EECON1

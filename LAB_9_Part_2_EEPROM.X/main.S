@@ -41,8 +41,8 @@
   Display        EQU 0x75    ;the letter we are about to show
   Selecting      EQU 0x76    ;1 = picking a letter, 0 = normal
   TimeoutCount   EQU 0x77    ;10 ms ticks left before the pick times out
-  SelectDown        EQU 0x78    ;1 = we already counted this Select press
-  WriteDown         EQU 0x79    ;1 = we already counted this Write press
+  SelectDown     EQU 0x78    ;1 = we already counted this Select press
+  WriteDown      EQU 0x79    ;1 = we already counted this Write press
   DelayInner     EQU 0x7A    ;counts down inside the 1 ms wait
   DelayOuter     EQU 0x7B    ;counts down how many 1 ms waits are left
 

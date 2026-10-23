@@ -1,7 +1,7 @@
     ; Luke Groesbeck
     ; RCET3375
     ; EEPROM
-    ; https://github.com/groeluke/Lab_9_EEPROM/tree/main/LAB_9_Part_2_EEPROM.X
+    ; https://github.com/groeluke/Lab_9_EEPROM/tree/main/LAB_9_Part_3_EEPROM.X
     ; Linker code = -Wl,-presetVect=0000h,-pisrVect=0004h,-pcode=0008h
 ; PIC16F883 Configuration Bit Settings
 ; Assembly source line config statements
@@ -22,328 +22,319 @@
   CONFIG  BOR4V = BOR40V        ; Brown-out Reset Selection bit (Brown-out Reset set to 4.0V)
   CONFIG  WRT = OFF             ; Flash Program Memory Self Write Enable bits (Write protection off)
 
-; config statements should precede project file includes.
-#include <xc.inc>
-  ee_address     EQU 0x70    ;the EEPROM address to read or write
-  ee_data        EQU 0x71    ;the byte we read, or the byte we want to write
-  ee_status      EQU 0x72    ;the status flags below
-
-; The bit numbers inside ee_status
-  EEPROM_READ    EQU 0       ;bit 0 = a read is happening
-  EEPROM_WRITE   EQU 1       ;bit 1 = a write started and has not been checked yet
-  EEPROM_ERROR   EQU 2       ;bit 2 = the last write did not check out
-  EE_GIE_SAVED   EQU 7       ;bit 7 = remembers if interrupts were on during a write
-  EE_BUSY        EQU 0b00000011 ;the READ and WRITE bits together
-
-; The rest of the program's variables
-  CurrentAddress EQU 0x73    ;the EEPROM address the program uses (0x00)
-  Pending        EQU 0x74    ;the letter being picked: 'A' (0x41) or 'B' (0x42)
-  Display        EQU 0x75    ;the letter we are about to show
-  Selecting      EQU 0x76    ;1 = picking a letter, 0 = normal
-  TimeoutCount   EQU 0x77    ;10 ms ticks left before the pick times out
-  SelectDown        EQU 0x78    ;1 = we already counted this Select press
-  WriteDown         EQU 0x79    ;1 = we already counted this Write press
-  DelayInner     EQU 0x7A    ;counts down inside the 1 ms wait
-  DelayOuter     EQU 0x7B    ;counts down how many 1 ms waits are left
-
   
-; Reset Vector at 0000h. Execution starts here after reset.
+#include <xc.inc>
+  
+   ee_address   EQU 0x70   ;EEPROM address to read or write
+   ee_data      EQU 0x71   ;byte read back or to write
+   KeyNow       EQU 0x73   ;key down now (ASCII, 0 = none)
+   KeyLast      EQU 0x74   ;key down on the last scan
+   KeyDone      EQU 0x75   ;key already counted
+   DigitCount   EQU 0x76   ;digits typed (5 = too many)
+   BuzzTimer    EQU 0x77   ;buzzer time left (10 ms units)
+   LockTimer    EQU 0x78   ;solenoid time left (10 ms units)
+   Temp         EQU 0x79   ;loop counter
+
+; ---- Bank 0 (keep these 4 in a row) ----
+   Entry0       EQU 0x22   ;typed digit 1
+   Entry1       EQU 0x23   ;typed digit 2
+   Entry2       EQU 0x24   ;typed digit 3
+   Entry3       EQU 0x25   ;typed digit 4
+
+; ---- Settings ----
+   PinBase      EQU 0x10   ;EEPROM address of the first PIN digit
+   BeepTicks    EQU 20     ;20 x 10 ms = 200 ms
+   OpenTicks    EQU 100    ;100 x 10 ms = 1 second
+
 PSECT resetVect,class=CODE,delta=2
-ResetVector: 
+ResetVector:
     GOTO Setup
 
-; Interrupt Vector at 0004h. Execution starts here after an interrupt.
 PSECT isrVect,class=CODE,delta=2
 InterruptVector:
-   
-; Main code section starts at 0008h. User code goes here.
+
 PSECT code,class=CODE,delta=2
- 
-Setup: 
-    ;       Bank 3
-    BANKSEL ANSEL
-    CLRF    ANSEL         ;make every pin a normal digital pin
-    CLRF    ANSELH
-    ;       Bank 1
-    BANKSEL OPTION_REG
-    BCF     OPTION_REG,7  ;turn on the built-in pull-up resistors for PORTB
-    MOVLW   0b00000011
-    MOVWF   WPUB          ;use the pull-ups on RB0 and RB1 only
-    BSF     TRISB,0       ;RB0 is an input (Select button)
-    BSF     TRISB,1       ;RB1 is an input (Write button)
-    BCF     TRISA,0       ;RA0 is an output (selection LED)
-    BCF     TRISA,1       ;RA1 is an output (main loop marker)
-    BCF     TRISA,2       ;RA2 is an output (error LED)
-    CLRF    TRISC         ;all of PORTC is an output (the display)
-    MOVLW   249
-    MOVWF   PR2           ;Timer2 counts 250 steps (this makes 1 ms)
+
+Setup:
     ;       Bank 0
     BANKSEL PORTA
-    CLRF    PORTA         ;all the markers and LEDs start OFF
-    CLRF    PORTC         ;display starts blank
-    CLRF    ee_status     ;no read, no write, no error
-    CLRF    CurrentAddress ;use EEPROM address 0x00
-    MOVLW   0x41
-    MOVWF   Pending       ;the pick starts out as 'A'
-    CLRF    Selecting
-    CLRF    TimeoutCount
-    CLRF    SelectDown
-    CLRF    WriteDown
-    BCF     PIR1,1        ;clear the Timer2 flag
-    MOVLW   0b01001101    ;Timer2 on, the flag is set every 10 ms
+    CLRF    PORTA              ;buzzer, solenoid and LED start OFF
+    CLRF    PORTB              ;keypad rows start low
+    CLRF    PORTC              ;display starts blank
+
+    ;       Bank 3
+    BANKSEL ANSEL
+    CLRF    ANSEL              ;make every pin a normal digital pin
+    CLRF    ANSELH
+
+    ;       Bank 1
+    BANKSEL TRISA
+    CLRF    TRISA              ;PORTA all outputs (RA0 buzzer, RA1 solenoid + LED)
+    CLRF    TRISC              ;PORTC all outputs (display)
+    MOVLW   0b11110000
+    MOVWF   TRISB              ;RB0-RB3 rows out, RB4-RB7 columns in
+    MOVWF   WPUB               ;weak pull-ups on the column pins
+    BCF     OPTION_REG,7       ;turn weak pull-ups on (RBPU = 0)
+    MOVLW   249
+    MOVWF   PR2                ;Timer2 period = 250 counts
+
+    ;       Bank 0
+    BANKSEL T2CON
+    MOVLW   0b01001101         ;postscale 1:10, Timer2 ON, prescale 1:4 -> 10 ms
     MOVWF   T2CON
 
-; MAIN LOOP: this runs over and over and never waits for the EEPROM.
+    CLRF    KeyNow             ;start with a clean slate after reset
+    CLRF    KeyLast
+    CLRF    KeyDone
+    CLRF    DigitCount
+    CLRF    BuzzTimer
+    CLRF    LockTimer
+
+    MOVLW   0x4C               ;'L'
+    MOVWF   PORTC              ;show LOCKED
+
+; MAIN LOOP - runs once every 10 ms
 Main:
-    BSF     PORTA,1       ;marker ON
-    BCF     PORTA,1       ;marker OFF right away
-
-; Is a write finished?
-    BTFSS   ee_status,EEPROM_WRITE ;was a write started?
-    GOTO    ErrorLed      ;no
-    BTFSS   PIR2,4        ;EEIF: the chip sets this when the write is done
-    GOTO    ErrorLed      ;not done yet, so keep running
-    CALL    EEPROMVerifyWrite ;it is done, so check it one time
-
-; The error LED always matches the error flag
-ErrorLed:
-    BTFSC   ee_status,EEPROM_ERROR ;is there an error?
-    GOTO    ErrorOn
-    BCF     PORTA,2       ;no error, LED OFF
-    GOTO    CheckTimeout
-ErrorOn:
-    BSF     PORTA,2       ;error, LED ON
-
-; Every 10 ms count down the selection timeout
-CheckTimeout:
-    BTFSS   PIR1,1        ;has 10 ms gone by?
-    GOTO    CheckButtons  ;no
-    BCF     PIR1,1        ;clear the flag for the next 10 ms
-    BTFSS   Selecting,0   ;only count while picking a letter
-    GOTO    CheckButtons
-    DECFSZ  TimeoutCount,F ;one tick used up, is it zero?
-    GOTO    CheckButtons  ;not yet
-    CALL    ExitSelect    ;time is up, leave selection (no write)
-
-; Ignore the buttons while a read or write is happening
-CheckButtons:
-    MOVLW   EE_BUSY
-    ANDWF   ee_status,W   ;W = the READ and WRITE bits
-    BTFSS   STATUS,2      ;zero means not busy
-    GOTO    ShowLetter    ;busy, so skip the buttons
-
-; Select button
-    BTFSS   PORTB,0       ;is it pressed? LOW = pressed
-    GOTO    SelectPressed ;yes
-    BTFSS   SelectDown,0  ;it is released, did we count a press before?
-    GOTO    CheckWrite    ;no, nothing to do
-    CALL    Wait10ms      ;wait 10 ms to make sure it is really released
-    BTFSC   PORTB,0       ;pressed again? skip the next line if yes
-    CLRF    SelectDown    ;really released, so get ready for the next press
-    GOTO    CheckWrite
-SelectPressed:
-    BTFSC   SelectDown,0  ;did we already count this press?
-    GOTO    CheckWrite    ;yes, ignore it
-    CALL    Wait10ms      ;wait 10 ms to make sure it is not bounce
-    BTFSC   PORTB,0       ;still pressed? skip the next line if yes
-    GOTO    CheckWrite    ;it was only bounce
-    BSF     SelectDown,0  ;remember we counted this press
-    BTFSC   Selecting,0   ;already picking a letter?
-    GOTO    TogglePick    ;yes, switch the letter
-    BSF     Selecting,0   ;no, this is the first press, so start picking
-    MOVLW   0x41
-    MOVWF   Pending       ;start with 'A'
-    BSF     PORTA,0       ;selection LED ON
-    GOTO    RestartTimeout
-TogglePick:
-    MOVLW   0x03
-    XORWF   Pending,F     ;'A' becomes 'B', 'B' becomes 'A'
-RestartTimeout:
-    MOVLW   100
-    MOVWF   TimeoutCount  ;a new full second (100 x 10 ms) starts now
-
-;Write button
-CheckWrite:
-    BTFSS   PORTB,1       ;is it pressed? (LOW = pressed)
-    GOTO    WritePressed  ;yes
-    BTFSS   WriteDown,0   ;it is released, did we count a press before?
-    GOTO    ShowLetter    ;no, nothing to do
-    CALL    Wait10ms      ;wait 10 ms to make sure it is really released
-    BTFSC   PORTB,1       ;pressed again? skip the next line if yes
-    CLRF    WriteDown     ;really released, so get ready for the next press
-    GOTO    ShowLetter
-WritePressed:
-    BTFSC   WriteDown,0   ;did we already count this press?
-    GOTO    ShowLetter    ;yes, ignore it
-    CALL    Wait10ms      ;wait 10 ms to make sure it is not bounce
-    BTFSC   PORTB,1       ;still pressed? skip the next line if yes
-    GOTO    ShowLetter    ;it was only bounce
-    BSF     WriteDown,0   ;remember we counted this press
-    BTFSS   Selecting,0   ;Write only counts while picking a letter
-    GOTO    ShowLetter    ;not picking, so ignore it
-    CALL    ExitSelect    ;stop the timer and turn the LED OFF
-    MOVF    CurrentAddress,W
-    MOVWF   ee_address    ;where to save
-    MOVF    Pending,W
-    MOVWF   ee_data       ;what to save
-    CALL    EEPROMWrite   ;start the write (it does not wait)
-
-;Update the display
-ShowLetter:
-    BTFSC   Selecting,0   ;picking a letter?
-    GOTO    ShowPending   ;yes, show the pick
-    BTFSC   ee_status,EEPROM_WRITE ;is a write happening?
-    GOTO    Main          ;yes, leave the display alone, do not read the EEPROM
-    MOVF    CurrentAddress,W
-    MOVWF   ee_address
-    CALL    EEPROMRead    ;the stored letter comes back in ee_data
-    
-    MOVF    ee_data,W
-    MOVWF   Display
-    XORLW   0x41          ;is it A
-    BTFSC   STATUS,2
-    GOTO    ShowStored    ;if yes show it
-    MOVF    Display,W
-    XORLW   0x42          ;is it B
-    BTFSC   STATUS,2
-    GOTO    ShowStored    ;if yes show it
-    MOVLW   0x3F          ;it is neither, so show a question mark
-    MOVWF   Display
-ShowStored:
-    MOVF    Display,W
-    CALL    DisplayLetter ;put the letter on the display
+    BTFSS   PIR1,1             ;10 ms tick yet? (TMR2IF)
     GOTO    Main
-ShowPending:
-    MOVF    Pending,W
-    CALL    DisplayLetter ;show the letter we are picking
+    BCF     PIR1,1             ;clear the tick flag
+
+    CALL    RunTimers          ;turn the buzzer / solenoid off when time is up
+    CALL    ScanKeypad         ;look for a key
+    CALL    KeyEvent           ;debounce - runs HandleKey once per real press
     GOTO    Main
 
-;ExitSelect: leave selection mode (used by the timeout and by Write).
-ExitSelect:
-    CLRF    Selecting     ;not picking anymore
-    CLRF    TimeoutCount  ;stop the timer
-    BCF     PORTA,0       ;selection LED OFF
-    RETURN
-
-;DisplayLetter: the letter to show is in W.
-DisplayLetter:
-    BANKSEL PORTC         ;make sure we are in bank 0 (W is not changed)
-    MOVWF   PORTC         ;send the letter to the display
-    RETURN
-
-; THE THREE EEPROM ROUTINES. They only use ee_address, ee_data and
-; ee_status, so they can be copied into another program.
-
-;EEReadByte: a helper. Reads the byte at ee_address and returns it in W.
-;It does not change ee_data or ee_status.
-EEReadByte:
-    BANKSEL EEADR
-    MOVF    ee_address,W
-    MOVWF   EEADR         ;which address to read
-    BANKSEL EECON1
-    BCF     EECON1,7      ;pick data EEPROM (not program memory)
-    BSF     EECON1,0      ;start the read
-    BANKSEL EEDATA
-    MOVF    EEDATA,W      ;the value is ready, so copy it into W
-    BANKSEL PORTA         ;go back to bank 0 (W is not changed)
-    RETURN
-
-;EEPROMRead: in = ee_address, out = ee_data.
-;EEPROM_READ is ON while it runs.
-EEPROMRead:
-    BSF     ee_status,EEPROM_READ  ;read started
-    CALL    EEReadByte    ;the byte comes back in W
-    MOVWF   ee_data       ;save it in ee_data
-    BCF     ee_status,EEPROM_READ  ;read finished
-    RETURN
-
-;EEPROMWrite: in ee_address and ee_data.
-;It starts the write and returns. It does NOT wait.
-;It does nothing if a write is already going, or if the stored byte
-;is already the same this saves wear on the EEPROM.
-EEPROMWrite:
-    BTFSC   ee_status,EEPROM_WRITE ;is a write already going?
-    RETURN                ;yes, leave everything alone
-    BANKSEL PIR2
-    BTFSC   PIR2,4        ;is EEIF still set from an old write?
-    RETURN                ;yes, leave everything alone
-    CALL    EEReadByte    ;W = the byte stored right now
-    XORWF   ee_data,W     ;zero if it is the same as what we want to save
+; RunTimers - count down the buzzer and the solenoid output
+RunTimers:
+    MOVF    BuzzTimer,F        ;is the buzzer timer zero?
     BTFSC   STATUS,2
-    RETURN                ;same value, so do not write
+    GOTO    CheckLock          ;yes - buzzer is already off
+    DECFSZ  BuzzTimer,F        ;count down one tick (skip next line at 0)
+    GOTO    CheckLock
+    BCF     PORTA,0            ;time is up - buzzer OFF
 
-    BSF     ee_status,EEPROM_WRITE ;a real write is starting
-    BANKSEL EEADR
-    MOVF    ee_address,W
-    MOVWF   EEADR         ;the address to write
-    MOVF    ee_data,W
-    MOVWF   EEDATA        ;the byte to write
-    
-    
-    ;MOVLW   1             ;TEST ONLY: remove the ; on these two lines to write
-    ;ADDWF   EEDATA,F      ;the WRONG byte, so the check fails on purpose
-    
-    
-    BANKSEL EECON1
-    BCF     EECON1,7      ;pick data EEPROM
-    BSF     EECON1,2      ;allow writing
-
-    BCF     ee_status,EE_GIE_SAVED ;start by assuming interrupts were OFF
-    BTFSC   INTCON,7      ;were they ON?
-    BSF     ee_status,EE_GIE_SAVED ;yes, remember that
-GieOff:
-    BCF     INTCON,7      ;turn interrupts OFF
-    BTFSC   INTCON,7      ;make sure they are really OFF
-    GOTO    GieOff
-
-    MOVLW   0x55          ;the chip needs this exact code, in this exact order,
-    MOVWF   EECON2        ;with nothing in between, or it ignores the write
-    MOVLW   0xAA
-    MOVWF   EECON2
-    BSF     EECON1,1      ;start the write (we do not wait)
-
-    BTFSC   ee_status,EE_GIE_SAVED ;were interrupts ON when we came in?
-    BSF     INTCON,7      ;yes, turn them back ON
-    BCF     ee_status,EE_GIE_SAVED ;we are done with that memory bit
-    BANKSEL PORTA         ;back to bank 0
+CheckLock:
+    MOVF    LockTimer,F        ;is the solenoid timer zero?
+    BTFSC   STATUS,2
+    RETURN                     ;yes - nothing to do
+    DECFSZ  LockTimer,F        ;count down one tick (skip next line at 0)
+    RETURN
+    BCF     PORTA,1            ;one second is up - solenoid and LED OFF
+    MOVLW   0x4C               ;'L'
+    MOVWF   PORTC              ;show LOCKED again
     RETURN
 
-;EEPROMVerifyWrite: call this one time after a write finishes.
-;It checks that the stored byte is the byte we wanted. It does not
-;change ee_data and it never tries the write again.
-EEPROMVerifyWrite:
-    CALL    EEReadByte    ;W = what is really stored
-    XORWF   ee_data,W     ;zero if it matches what we wanted
+; ScanKeypad - pull one row low at a time. If a column reads low,
+; that key is down, so its ASCII code goes in KeyNow.
+; (MOVWF only runs when the column is low, because BTFSS skips it
+;  when the column is high)
+ScanKeypad:
+    CLRF    KeyNow             ;assume no key is down
+
+    BANKSEL TRISB              ;--- Row 1 (RB0 low) ---
+    MOVLW   0b11111110
+    MOVWF   TRISB
+    BANKSEL PORTB
+    MOVLW   0x31               ;'1'
+    BTFSS   PORTB,4            ;column 1 low?
+    MOVWF   KeyNow             ;yes - key 1 is down
+    MOVLW   0x32               ;'2'
+    BTFSS   PORTB,5
+    MOVWF   KeyNow
+    MOVLW   0x33               ;'3'
+    BTFSS   PORTB,6
+    MOVWF   KeyNow
+    MOVLW   0x41               ;'A'
+    BTFSS   PORTB,7
+    MOVWF   KeyNow
+
+    BANKSEL TRISB              ;--- Row 2 (RB1 low) ---
+    MOVLW   0b11111101
+    MOVWF   TRISB
+    BANKSEL PORTB
+    MOVLW   0x34               ;'4'
+    BTFSS   PORTB,4
+    MOVWF   KeyNow
+    MOVLW   0x35               ;'5'
+    BTFSS   PORTB,5
+    MOVWF   KeyNow
+    MOVLW   0x36               ;'6'
+    BTFSS   PORTB,6
+    MOVWF   KeyNow
+    MOVLW   0x42               ;'B'
+    BTFSS   PORTB,7
+    MOVWF   KeyNow
+
+    BANKSEL TRISB              ;--- Row 3 (RB2 low) ---
+    MOVLW   0b11111011
+    MOVWF   TRISB
+    BANKSEL PORTB
+    MOVLW   0x37               ;'7'
+    BTFSS   PORTB,4
+    MOVWF   KeyNow
+    MOVLW   0x38               ;'8'
+    BTFSS   PORTB,5
+    MOVWF   KeyNow
+    MOVLW   0x39               ;'9'
+    BTFSS   PORTB,6
+    MOVWF   KeyNow
+    MOVLW   0x43               ;'C'
+    BTFSS   PORTB,7
+    MOVWF   KeyNow
+
+    BANKSEL TRISB              ;--- Row 4 (RB3 low) ---
+    MOVLW   0b11110111
+    MOVWF   TRISB
+    BANKSEL PORTB
+    MOVLW   0x2A               ;'*'
+    BTFSS   PORTB,4
+    MOVWF   KeyNow
+    MOVLW   0x30               ;'0'
+    BTFSS   PORTB,5
+    MOVWF   KeyNow
+    MOVLW   0x23               ;'#'
+    BTFSS   PORTB,6
+    MOVWF   KeyNow
+    MOVLW   0x44               ;'D'
+    BTFSS   PORTB,7
+    MOVWF   KeyNow
+    RETURN                     ;we are back in bank 0
+
+; KeyEvent - debounce. A key counts as ONE press only if:
+; it is seen on two scans in a row (10 ms apart), and
+; it is not the key we already counted (wait for release)
+KeyEvent:
+    MOVF    KeyNow,W
+    BTFSC   STATUS,2           ;no key down?
+    GOTO    NoKey
+    XORWF   KeyLast,W          ;same key as the last scan?
     BTFSS   STATUS,2
-    GOTO    VerifyBad
-    CLRF    ee_status     ;good, so clear all the flags (this clears an old error too)
-    GOTO    VerifyDone
-VerifyBad:
-    BCF     ee_status,EEPROM_WRITE ;the write is over
-    BSF     ee_status,EEPROM_ERROR ;but it did not match, so flag an error
-VerifyDone:
-    BANKSEL PIR2
-    BCF     PIR2,4        ;clear the "write finished" flag (EEIF)
-    BANKSEL EECON1
-    BCF     EECON1,2      ;turn writing OFF (WREN)
-    BANKSEL PORTA         ;back to bank 0
+    GOTO    NotSame            ;no - wait for the next scan
+    MOVF    KeyNow,W
+    XORWF   KeyDone,W          ;did we already count this press?
+    BTFSC   STATUS,2
+    RETURN                     ;yes - still held down, ignore it
+    MOVF    KeyNow,W
+    MOVWF   KeyDone            ;remember we counted it
+    GOTO    HandleKey          ;a new key press!
+
+NotSame:
+    MOVF    KeyNow,W
+    MOVWF   KeyLast            ;remember it, check again next scan
     RETURN
 
-;Wait10ms: waits about 10 ms by doing the 1 ms wait 10 times.
-Wait10ms:
-    MOVLW   10
-    MOVWF   DelayOuter    ;do the 1 ms wait 10 times
-Wait10Loop:
-    CALL    Wait1ms
-    DECFSZ  DelayOuter,F  ;one fewer left, stop when it hits zero
-    GOTO    Wait10Loop
+NoKey:
+    CLRF    KeyLast            ;key was let go - ready for the next press
+    CLRF    KeyDone
     RETURN
-Wait1ms:
-    MOVLW   247
-    MOVWF   DelayInner
-Wait1Loop:
-    NOP
-    DECFSZ  DelayInner,F  ;count down to zero
-    GOTO    Wait1Loop
+
+; HandleKey runs once per key press (the key is in KeyDone)
+HandleKey:
+    BSF     PORTA,0            ;buzzer ON for every key
+    MOVLW   BeepTicks
+    MOVWF   BuzzTimer          ;RunTimers turns it off after 200 ms
+
+    MOVF    LockTimer,F        ;is the solenoid on right now?
+    BTFSS   STATUS,2
+    RETURN                     ;yes - beep only, ignore the key
+
+    MOVF    KeyDone,W
+    XORLW   0x23               ;is it '#'?
+    BTFSC   STATUS,2
+    GOTO    Submit
+
+    MOVF    KeyDone,W
+    XORLW   0x2A               ;is it '*'?
+    BTFSC   STATUS,2
+    GOTO    Cancel
+
+    BTFSS   KeyDone,4          ;digits (0x30-0x39) have bit 4 set, A-D do not
+    RETURN                     ;A-D: beep only, nothing else
+
+    ;it is a digit
+    BTFSC   DigitCount,2       ;already 4 digits? (counts 0-3 have bit 2 clear)
+    GOTO    TooMany            ;yes - this is a fifth digit
+
+    MOVLW   Entry0             ;address of the first digit
+    ADDWF   DigitCount,W       ;plus digits so far = where this one goes
+    MOVWF   FSR                ;FSR points at that spot
+    MOVF    KeyDone,W
+    ANDLW   0x0F               ;ASCII '5' (0x35) becomes the number 5
+    MOVWF   INDF               ;save the digit
+    INCF    DigitCount,F       ;one more digit typed
+
+    MOVF    DigitCount,W
+    IORLW   0x30               ;turn 1-4 into '1'-'4'
+    MOVWF   PORTC              ;show how many digits typed
     RETURN
+
+TooMany:
+    MOVLW   5
+    MOVWF   DigitCount         ;5 = too many (only # or * ends it)
+    MOVLW   0x45               ;'E'
+    MOVWF   PORTC
+    RETURN
+
+Cancel:                        ;* was pressed
+    CLRF    DigitCount         ;forget the typed digits
+    MOVLW   0x43               ;'C'
+    MOVWF   PORTC
+    RETURN
+
+Submit:                        ;# was pressed
+    MOVF    DigitCount,W
+    XORLW   4                  ;exactly 4 digits typed?
+    BTFSS   STATUS,2
+    GOTO    Reject             ;no - too few, or a fifth digit was pressed
+
+    MOVLW   Entry0
+    MOVWF   FSR                ;FSR starts at the first typed digit
+    MOVLW   PinBase
+    MOVWF   ee_address         ;start at the first stored digit
+    MOVLW   4
+    MOVWF   Temp               ;check 4 digits
+
+CompareLoop:
+    CALL    EEPROMRead         ;get the stored digit (ee_data)
+    MOVF    INDF,W             ;get the typed digit
+    XORWF   ee_data,W          ;are they the same?
+    BTFSS   STATUS,2
+    GOTO    Reject             ;no - wrong PIN
+    INCF    FSR,F              ;next typed digit
+    INCF    ee_address,F       ;next stored digit
+    DECFSZ  Temp,F             ;one digit done
+    GOTO    CompareLoop
+
+    ;all 4 digits matched
+    CLRF    DigitCount         ;clear the entry
+    BSF     PORTA,1            ;solenoid and LED ON
+    MOVLW   OpenTicks
+    MOVWF   LockTimer          ;RunTimers turns it off after 1 second
+    MOVLW   0x4F               ;'O'
+    MOVWF   PORTC
+    RETURN
+
+Reject:
+    CLRF    DigitCount         ;clear the entry so a new try can start
+    MOVLW   0x45               ;'E'
+    MOVWF   PORTC
+    RETURN
+
+; EEPROMRead (Part 2 interface)
+;   in : ee_address
+;   out: ee_data
+EEPROMRead:
+    BANKSEL EEADR
+    MOVF    ee_address,W
+    MOVWF   EEADR              ;tell the EEPROM which address
+    BANKSEL EECON1
+    BCF     EECON1,7           ;read data EEPROM (not program memory)
+    BSF     EECON1,0           ;start the read
+    BANKSEL EEDATA
+    MOVF    EEDATA,W           ;grab the byte
+    BANKSEL PORTA              ;back to bank 0
+    MOVWF   ee_data
+    RETURN
+
+
     End
